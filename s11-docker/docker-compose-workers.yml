@@ -1,0 +1,12 @@
+version: '3'
+
+services:
+
+  workers:
+    build: .
+    environment:
+      - NUM_WORKERS=8
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./data/app:/data

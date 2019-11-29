@@ -1,0 +1,21 @@
+version: '3'
+
+services:
+
+  app:
+    build: .
+    environment:
+      - NUM_WORKERS=4
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    ports:
+      - "8000:8000"
+      - "9181:9181"
+    volumes:
+      - ./data/app:/data
+
+  redis:
+    image: "redis:alpine"
+    command: redis-server --appendonly yes
+    volumes:
+      - ./data/redis:/data

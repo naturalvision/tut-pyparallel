@@ -1,0 +1,1156 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Parallel code execution in Python</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+    <style type="text/css">
+      @import url(https://fonts.googleapis.com/css?family=Yanone+Kaffeesatz);
+      @import url(https://fonts.googleapis.com/css?family=Droid+Serif:400,700,400italic);
+      @import url(https://fonts.googleapis.com/css?family=Ubuntu+Mono:400,700,400italic);
+
+      body { font-family: 'Droid Serif'; }
+      h1, h2, h3 {
+        font-family: 'Yanone Kaffeesatz';
+        font-weight: normal;
+      }
+      .remark-code, .remark-inline-code { font-family: 'Ubuntu Mono'; }
+
+    </style>
+  </head>
+  <body>
+    <textarea id="source">
+
+class: center, middle
+
+# Parallel code execution in Python
+
+Daniel Nouri, Natural Vision UG, 2019
+
+---
+
+# Overview
+
+- What is Python's global interpreter lock (GIL)?
+- Basic usage of threading and multiprocessing in Python
+- Pros and cons of threading and multiprocessing
+- When to use what, how to benchmark to know what to use
+- Triggering background processes from a web app
+- Task queues
+- Deploying task queues and workers with Docker
+
+---
+
+# The GIL
+
+### Question
+
+Python's Global Interpreter Lock.  Have you heard about it?  What is
+it and why do we care?
+
+---
+
+# The GIL (2)
+
+### Question
+
+Python's Global Interpreter Lock.  Have you heard about it?  What is
+it and why do we care?
+
+### Answer
+
+The GIL makes life easier for developers of Python extension modules
+written in C.  It allows these developers to worry less about thread
+safety.
+
+The GIL is specific to the CPython implementation; other
+implementations of Python such as PyPy and Jython do not have a GIL.
+
+The prominent downside of the GIL in practice is that **multi-threaded
+CPython code cannot make use of multiple CPU cores**, such as in other
+languages (or Python runtimes).
+
+---
+
+# Threading and multi-processing
+
+Threading and multi-processing are two models for running programs in
+parallel:
+
+1) **Threading** is more light-weight and it allows parallel code to
+run in the same process.  Threads are **quick to create** and they
+share one memory space.  Threads can be **tricky to program with**:
+Imagine two threads writing to shared resources or memory at the same
+time.
+
+2) **Multi-processing** is more heavy-weight; separate processes
+create **overhead** and they work in their own separate memory space.
+The upside is that no memory is shared, and thus it's **less tricky to
+program with**.
+
+---
+
+# Installing requirements
+
+The first part of the tutorial is **interactive**.  You're encouraged
+to type along.  To be able to execute the examples, you'll need to
+install some Python requirements.
+
+Open a terminal, [activate your virtual
+environment](https://docs.python.org/3/tutorial/venv.html), then
+navigate to the folder that these slides are in, and install the
+requirements from the [requirements.txt](requirements.txt) file with
+`pip`:
+
+```bash
+cd tut-pyparallel
+pip install -r requirements.txt
+```
+
+Or if you're working with `conda`:
+
+```bash
+conda install --file requirements.txt
+```
+
+---
+
+# Interactive exploration
+
+Let's now write some code together to see how and when to use
+multi-threading and multi-processing within Python, and when we need
+to worry about the GIL.
+
+Use your favorite editor and create a new file, call it something like
+`parallel.py`, to put the code in that we write together.  To execute
+the code that you've entered in this file, open a terminal, make sure
+that your pip or conda environment is active, and run:
+
+```bash
+python parallel.py
+```
+
+This subfolder also containts source files that contain the code that
+we'll write interactively, for later reference:
+
+- [`s01_sleep.py`](s01_sleep.py)
+- [`s02_requests.py`](s02_requests.py)
+- [`s03_python_prime.py`](s03_python_prime.py)
+- [`s04_numpy.py`](s04_numpy.py)
+
+*(No need to open these files.  We're now going through these steps
+together, one by one.)*
+
+---
+
+# Benchmarking web apps with *ab*
+
+In the next set of examples (starting with
+[`s05_flask_sleep.py`](s05_flask_sleep.py)), we'll take a look at
+threads and multi-processing in the context of running Python web
+apps.  To benchmark these web apps, we'll use the venerable *Apache
+HTTP server benchmarking tool*, or `ab`.
+
+To install `ab` on *Debian Linux* or *Ubuntu*, run `apt install
+apache2-utils`.
+
+To install `ab` on *Windows*, visit the [Apache
+Lounge](https://www.apachelounge.com/download/), download the Apache
+2.4 binaries (something like `httpd-2.4.39-win64-VS16.zip`), unzip the
+archive, and find the `ab.exe` binary in the `bin/` subfolder.
+
+In order to run benchmarks, we will generally have one terminal open
+to run the web app (and to restart it after changes), and another to
+run `ab`.
+
+---
+
+# Flask and threads
+
+[`s05_flask_sleep.py`](s05_flask_sleep.py) contains a simple Flask
+application with a single endpoint `/sleep`, which sleeps for a given
+number of seconds:
+
+```python
+@app.route('/sleep')
+def sleep():
+    seconds = float(request.args.get('seconds', '1'))
+    time.sleep(seconds)
+    return 'Done sleeping!'
+```
+
+To fire up Flask's built-in web server, first make sure you have your
+virtual environment active.  Then, on *Linux*, set the `FLASK_APP`
+environment variable, and finally run `flask run` like this:
+
+```bash
+export FLASK_APP=s05_flask_sleep.py
+flask run
+```
+
+On Windows, setting environment variables is done slightly
+differently:
+
+```bash
+set FLASK_APP=s05_flask_sleep.py
+flask run
+```
+
+Now keep this terminal open to keep the app running.
+
+---
+
+# Usage of *ab*
+
+Running `ab` without any arguments returns a list of available
+options:
+
+```bash
+Usage: ab [options] [http[s]://]hostname[:port]/path
+Options are:
+    -n requests     Number of requests to perform
+    -c concurrency  Number of multiple requests to make at a time
+    ....
+```
+
+Let's run 10 requests against the `/sleep` endpoint, **one request at
+a time**:
+
+```bash
+ab -n 10 -c 1 "127.0.0.1:5000/sleep?seconds=1"
+```
+
+After ten seconds, this will come back with some useful information.
+In the output, look for the line that says `Requests per second`:
+
+`Requests per second:    1.00 [#/sec] (mean)`
+
+Now we run the same command, but we'll send the **ten requests in
+parallel**:
+
+```bash
+ab -n 10 -c 10 "127.0.0.1:5000/sleep?seconds=1"
+```
+
+---
+
+# Flask's use of threading; use the source
+
+It turns out that **Flask's built-in webserver uses threading by
+default**.  Let's take a look at the source to find out how that
+works.  Check where Flask has been installed in your environment by
+running this:
+
+```bash
+python -c "import flask; print(flask)"
+```
+
+Load the file `flask/cli.py` in your favorite editor and look for
+function `run_command`.  This function delegates work to
+`werkzeug.serving.run_simple`, which we'll look at next.  Use the same
+trick to find out where
+[`werkzeug.serving`](https://werkzeug.palletsprojects.com/en/0.15.x/serving/)
+resides in your environment:
+
+```bash
+python -c "import werkzeug.serving; print(werkzeug.serving)"`
+```
+
+We find that `werkzeug.serving.make_server` instantiates **different
+server classes dependent on its `threaded` and `processes`
+arguments**:
+
+```python
+    if threaded and processes > 1:
+        raise ValueError("cannot have a multithreaded and multi process server.")
+    elif threaded:
+        return ThreadedWSGIServer( # ...
+    elif processes > 1:
+        return ForkingWSGIServer( # ...
+```
+
+---
+
+# Flask's use of threading (2)
+
+Since `flask.cli.run_command` sets `threaded=True` by default, in our
+previous run, we ended up using `ThreadedWSGIServer`.  Note that
+`ThreadedWSGIServer` subclasses from `socketserver.ThreadingMixin`,
+while `ForkingWSGIServer` subclasses from `socketserver.ForkingMixin`.
+The [`socketserver`
+module](https://docs.python.org/3/library/socketserver.html) is part
+of the *Python Standard Library*, the source code of which is also
+available on your system.  Let's take a look at
+`ThreadingMixin.process_request`:
+
+```python
+    def process_request(self, request, client_address):
+        """Start a new thread to process the request."""
+        t = threading.Thread(target = self.process_request_thread,
+                             args = (request, client_address))
+        # ...
+        t.start()
+```
+
+We see that `ThreadingMixin` creates **a new thread for every incoming
+web request**.  (This is in contrast to
+`multiprocessing.pool.ThreadPool` from before, which creates a fixed
+number of worker threads upfront.)
+
+---
+
+# Flask's use of threading (3)
+
+Compare `ThreadingMixin.process_request` with
+`ForkingMixin.process_request`:
+
+```python
+    def process_request(self, request, client_address):
+        """Fork a new subprocess to process the request."""
+        pid = os.fork()
+        if pid:
+            # Parent process returns ...
+        else:
+            # Child process handles the request ...
+            try:
+                self.finish_request(request, client_address)
+            except Exception:
+                # ...
+```
+
+`ForkingMixin` **forks the parent process to create a new process for
+every incoming request**: `os.fork()` duplicates the calling process.
+The child process and the parent now run in separate memory spaces.
+At the time of `fork()` both memory spaces have the same content.
+(More about how `fork` works and what is shared and what isn't is
+detailed in the man page: `man fork`.)
+
+Sadly `fork` is not available on Windows, so those using Windows won't
+be able to execute some of the following examples.
+
+---
+
+# ✍️ Exercise: Use processes instead of threads to handle requests
+
+- Run the Flask server with the `--without-threads` flag (`flask run
+--without-threads`).  Observe how `--without-threads` affects the
+number of requests per second, when you send ten requests in parallel:
+
+  ```bash
+  ab -n 10 -c 10 "127.0.0.1:5000/sleep?seconds=1"
+  ```
+
+- In [`s05_flask_sleep.py`](s05_flask_sleep.py), find the comment
+`YOUR CODE HERE`.  Modify the call to `run_simple` to use a maximum of
+ten processes instead of threads.  Then use `ab` to see how using
+processes instead of threads affects performance.
+
+- The code below the `YOUR CODE HERE` comment is guarded by `if
+__name__ == '__main__':`, which means that it's only executed when you
+**call the script directly with `python s05_flask_sleep.py`**, and not
+when it's imported from another Python module.  Why is it a good idea
+to use this `if __name__ == '__main__':` guard in our script?
+
+---
+
+# Revisiting the GIL in the web context
+
+Remember that `time.sleep()` releases the GIL.  Many threads can
+`sleep()` in parallel.  The same goes for **I/O-bound** tasks, such as
+requesting resources on the web, or running database queries.  Even
+with the GIL, we can run Python code in another thread while we wait
+for a web request or a database query to come back.  **For these kinds
+of tasks, Python threads are great.**
+
+For **CPU-bound** tasks that use the GIL, such as the one in
+[`s03_python_prime.py`](s03_python_prime.py), the story looks
+different.  Take a look at [`s06_flask_prime.py`](s06_flask_prime.py),
+which exposes our `is_prime` function through the web.
+
+Start the Flask server without the use of threads and run `ab` to call
+the `/prime` endpoint a thousand times with ten requests in parallel:
+
+```bash
+export FLASK_APP=s06_flask_prime.py  # or set FLASK_APP=... on Windows
+flask run --without-threads
+ab -n 1000 -c 10 "127.0.0.1:5000/prime?n=100003"
+```
+
+Now compare the number of requests per second when running Flask with
+threads:
+
+```bash
+flask run --with-threads
+ab -n 1000 -c 10 "127.0.0.1:5000/prime?n=100003"
+```
+
+---
+
+# Revisiting the GIL in the web context (2)
+
+Instead of the ten-fold increase in the number of requests per second
+that our server was able to handle in the `/sleep` example, when we
+now use ten threads, we're even seeing slightly worse performance.
+This is due to the fact that `is_prime()` is CPU-bound, locks the GIL,
+and thus **calls to `is_prime()` cannot run in parallel within the
+same Python process or interpreter**.  The use of threads merely
+produces overhead and resource contention.
+
+### ✍️ Exercise
+
+Modify the call to `run_simple` in `s06_flask_prime.py` to use a
+maximum of ten processes instead of threads and run the benchmark
+again.  Can you improve on the number of requests per second?
+
+Note: The gains that you get from using multiple processes depends a
+lot of the number of your computer's CPU cores.  On a computer with
+eight cores, using ten processes, I am able to achieve roughly a
+six-fold increase in the number of requests per second.
+
+---
+
+# Installing Gunicorn
+
+By now, we've often seen the warning that we're not supposed to use
+Flask's built-in server for production environments.  Let's use the
+more robust [Gunicorn](https://gunicorn.org/) [WSGI
+server](https://wsgi.readthedocs.io) instead.  Make sure you have your
+environment active, and install it using `pip`:
+
+```bash
+pip install gunicorn
+```
+
+Gunicorn will sadly not work on Windows.
+
+---
+
+# Gunicorn and the pre-fork worker model
+
+Instead of forking a new process on every request like we saw with
+`werkzeug.serving.ForkingWSGIServer`, Gunicorn implements the
+*pre-fork worker model*.  Thus, **it does the expensive work of
+forking the Python process at startup time rather than on every
+request**.  We can tell Gunicorn how many processes we want to use by
+use of the `--workers` option.  The `--threads` option allows us to
+control the number of threads per worker:
+
+```bash
+gunicorn --workers=10 --threads=1 s06_flask_prime:app
+```
+
+### ✍️ Exercise
+
+Use `ab` to test how much our app benefits from using Gunicorn's
+pre-fork worker model instead of forking on every request:
+
+```bash
+ab -n 1000 -c 10 "127.0.0.1:8000/prime?n=100003"
+```
+
+---
+
+# Gunicorn and the pre-fork worker model (2)
+
+The benefits of the pre-fork worker model over ad-hoc forking become
+more obvious when considering Flask apps that hold larger amounts of
+data in memory.  Imagine that your Flask loads into memory the
+parameters of a large machine learning model.  We simulate this by
+adding these two lines at the top of `s06_flask_prime.py`:
+
+```python
+import numpy as np
+data = np.ones((10**8,))  # 800MB of data
+```
+
+Forking the Python process now involves making a copy of this data,
+and thus it's much slower.  Using Gunicorn, process initialization is
+done at startup time, and thus **the number of requests that we can
+handle using Gunicorn is the same as before we added the two lines**,
+while Flask's ad-hoc forking server is now about three times slower.
+
+--
+
+Note that by default, and in contrast to the Flask server, **Gunicorn
+will initialize your application code separately for each worker
+process**.  If instead you want to load your Python modules once,
+before the worker processes are forked, use the `--preload` flag:
+
+```bash
+gunicorn --workers=10 --preload s06_flask_prime:app
+```
+
+---
+
+# Parallel execution and Locks
+
+In the next example [`s07_flask_locks.py`](s07_flask_locks.py), we'll
+consider a multi-threaded, multi-process Flask app that uses resources
+that shouldn't be used in parallel.
+
+As an example, imagine that we want to run predictions using a large
+neural net on a GPU.  We want to be able to run calculations on the
+GPU while at the same time handling other I/O- or CPU-bound work.  But
+in our hypothetical example, only one process or thread may use a
+given GPU model at a time.
+
+To ***synchronize* the use of resources across threads and processes,
+we use a *Lock***, in our case that's `multiprocessing.Lock`, which
+works for both threads and multi-processing.  Here's an example of how
+to use a Lock in Python:
+
+```python
+from multiprocessing import Lock
+from mycode import mygpumodel
+
+_mylock = Lock()
+def predict(data):
+    with _mylock:
+        return mygpumodel.predict(data)
+```
+
+`predict()` is a wrapper around `mygpumodel.predict()` that blocks
+calls to the wrapped function while another thread or process is
+already calling it.
+
+---
+
+# Parallel execution and Locks (2)
+
+Looking at the [`s07_flask_locks.py`](s07_flask_locks.py), you'll find
+that there's two fake model inference functions (`model_true` and
+`model_false`), both of which really merely sleep for 10 milliseconds:
+
+
+```python
+from multiprocessing import Lock
+from time import sleep
+
+def model_true(): sleep(0.01) or 1
+def model_false(): sleep(0.01) or 0
+model_true_lock = Lock()
+model_false_lock = Lock()
+```
+
+However, when calling these functions, we make sure to acquire the
+respective locks.  Plus, there's some more stuff going on for each
+request:
+
+```python
+@app.route('/predict')
+def predict():
+    do_cpu_stuff(int(request.args['n']))
+    if do_io_stuff():
+        with model_true_lock:
+            prediction = model_true()
+    else:
+        with model_false_lock:
+            prediction = model_false()
+    return "The answer is {}".format(prediction)
+```
+
+---
+
+# What number of workers and threads?
+
+As is typical for a web app,
+[`s07_flask_locks.py`](s07_flask_locks.py) has code that is both
+CPU-bound (`do_cpu_stuff`) and I/O-bound (`do_io_stuff`), and thus
+performance will benefit from both multi-processing and
+multi-threading respectively.  **If and how much we benefit from each
+depends very much on the type of app we're running.**  We again use
+benchmarking to find good settings.
+
+### ✍️ Exercise
+
+Run the app using Gunicorn with different settings for both workers
+and threads, and try to find a setting for your machine that maximizes
+the number of requests per second when using `ab` like this:
+
+```bash
+ab -n 1000 -c 10 "127.0.0.1:8000/predict?n=100003"
+```
+
+Some example Gunicorn calls to get you started:
+
+```bash
+gunicorn --workers=1 --threads=1 --preload s07_flask_locks:app
+gunicorn --workers=4 --threads=1 --preload s07_flask_locks:app
+gunicorn --workers=1 --threads=4 --preload s07_flask_locks:app
+gunicorn --workers=4 --threads=4 --preload s07_flask_locks:app
+```
+
+---
+
+# multiprocessing.Lock caveat
+
+### ✍️ Exercise
+
+In our last example, we've invoked `gunicorn` with the `--preload`
+flag.  What happens if we omit that flag?  Why is the server
+processing requests faster without the flag?
+
+---
+
+# multiprocessing.Lock caveat (2)
+
+### ✍️ Exercise
+
+In our last example, we've invoked `gunicorn` with the `--preload`
+flag.  What happens if we omit that flag?  Why is the server
+processing requests faster without the flag?
+
+### Answer
+
+Remember that without `--preload`, Gunicorn will first create the
+worker processes and then load the application code, separately for
+each process.  This means that the two locks **`model_true_lock` and
+`model_false_lock` will be instantiated separately for each worker,
+and they will not be shared between our workers**, with the result
+being that ** individual workers *will run* `model_true` and
+`model_false` in parallel**.  Thus, when using `multiprocessing.Lock`,
+always make sure to fork after you've initialized the Lock, or you'll
+end up with a separate Lock for each one of your workers.
+
+---
+
+# A more real-world server
+
+The next example, [`s08_flask_pytorch.py`](s08_flask_pytorch.py) is a
+more realistic web app that uses Flask and PyTorch to classify images
+that we upload to it through HTTP.
+
+To run this example, you'll need to install PyTorch.  Head over to the
+[PyTorch webpage](https://pytorch.org/get-started/locally/) and find
+the instructions for installing PyTorch on your system.  On my CUDA
+server, I can run:
+
+```bash
+pip install torch torchvision  # this is probably different for you!
+```
+
+Then start up the web app with one thread in a single process:
+
+```bash
+export FLASK_APP=s08_flask_pytorch.py  # or set FLASK_APP=... on Windows
+flask run --without-threads  # use 'flask run' for Windows compatibility
+```
+
+For this example, we'll use our own, hand-rolled benchmarking code in
+[`s08_benchmark.py`](s08_benchmark.py).  To send 100 requests with 10
+requests in parallel, uploading images to the server, run:
+
+```bash
+python s08_benchmark.py -n 100 -c 10 http://localhost:5000/predict
+```
+
+---
+
+# Roll your own benchmarking
+
+Take a look at [`s08_benchmark.py`](s08_benchmark.py):
+
+- Note the use of the Python
+[click](https://click.palletsprojects.com/) libary to create a
+sophisticated command line interface (try `python s08_benchmark.py
+--help`).
+
+- Note the use of `multiprocessing.pool.ThreadPool`, which is used to
+send the actual requests:
+
+  ```python
+      imagebytes = open(image, 'rb').read()
+      pool = ThreadPool(concurrency)
+      t0 = time()
+      results = pool.starmap(do_request, [(url, imagebytes)] * requests)
+      total_time = time() - t0
+      print("Time taken for tests:  {:.3f} seconds".format(total_time))
+  ```
+
+---
+
+# More benchmarking the PyTorch server
+
+### ✍️ Exercise
+
+Use the [`s08_benchmark.py`](s08_benchmark.py) script to find a good
+setting for the number of processes (workers) and threads for our
+PyTorch image classification server.
+
+```bash
+python s08_benchmark.py -n 100 -c 10 http://localhost:5000/predict
+```
+
+---
+
+# More benchmarking the PyTorch server (2)
+
+### Answer
+
+- On my laptop with four cores, where the PyTorch model runs on CPU, I
+get the most requests per second by using one process with four
+threads.  This is roughly 50% faster than using a single thread and
+handles 22 requests per second:
+
+  ```bash
+  gunicorn --workers=1 --threads=4 s08_flask_pytorch:app 
+  ```
+
+- On my CUDA server, using multiple threads is beneficial as well.
+The server handles about 50 requests per second when running with a
+single thread, and about 120 requests per second with four threads.
+
+- Note that the GPU server is *only* about five times faster than the
+CPU-based one.  The reason for that is that we're sending images and
+processing images on the GPU one image at a time.  This produces a lot
+of overhead and it's much less efficient than sending a batch of
+images to the GPU to be processed all at once.  (This is what's
+usually done during training.)
+
+---
+
+# Long-running background processes
+
+Sometimes we want our program to **trigger another process on the
+system and return to the user immediately**.  The simplest way to do
+this in Python is to spawn a new process using the [`subprocess`
+module](https://docs.python.org/3/library/subprocess.html) from
+Python's Standard Library.
+
+Here's the [`s09_subporcess.py`](s09_subprocess.py) script that will
+run an arbitrary subprocess, redirect its output to be ignored, and
+not wait for the process to finish:
+
+```python
+import os
+import subprocess
+import sys
+
+process = subprocess.Popen(
+    args=sys.argv[1:],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    close_fds=True,
+    )
+
+print("My PID:               ", os.getpid())
+print("Spawned process PID:  ", process.pid)
+input("Press any key to exit {}\n".format(sys.argv[0]))
+```
+
+---
+
+# Long-running background processes (2)
+
+The [`s09_work.py`](s09_work.py) script exists so that we can
+demonstrate spawning long-running background processes.  `s09_work.py`
+writes every second the current time both to a given file and to
+stdout, for a given number of seconds.  We can run the work script on
+its own:
+
+```bash
+python s09_work.py s09-out.txt 30
+```
+
+We can also run it using the [`s09_subporcess.py`](s09_subprocess.py)
+script above:
+
+```bash
+python s09_subprocess.py python s09_work.py s09-out.txt 60
+```
+
+Note that our call to `subprocess.Popen` in `s09_subprocess.py` does
+not wait for the subprocess to finish.
+
+---
+
+# Long-running background processes (3)
+
+The issue with our approach in
+[`s09_subporcess.py`](s09_subprocess.py) is that the spawned
+subprocess *may* keep on running after the main script exits, but in
+general that's not guaranteed.  **The right way to create a process
+that keeps on running even after the parent process exited is to
+create a *daemon process* on Unix.**  (On Windows, passing the
+`CREATE_NEW_PROCESS_GROUP` flag to `subprocess.Popen` may give you
+daemon-like behaviour.)
+
+Script [`s09_daemonize.py`](s09_daemonize.py) deals with the gory
+details of creating a daemon process on Unix.  The resulting process
+is properly detached from the terminal that started it, and it's
+disassociated from the process group, and thus our work process now
+runs fully independently in the background.
+
+Try it:
+
+```bash
+python s09_daemonize.py python s09_work.py s09-out.txt 60
+```
+
+---
+
+# Long-running background processes (4)
+
+The daemonize approach can be used from within a web app as well.
+Again, the advantage of this over using the simpler approach in
+`s09_subporcess.py` is that the process will keep on running even if
+the web server shuts down.
+
+You can find what's probably the most insecure web application ever
+written in [`s09_flask_daemonize.py`](s09_flask_daemonize.py).  This
+app has one endpoint `/run` which runs arbitrary commands from the web
+as daemons, using the `s09_daemonize.py` module.  Start up the server:
+
+```bash
+python s09_flask_daemonize.py
+```
+
+Then open this address in your browser:
+
+http://127.0.0.1:5000/run?command=python%20s09_work.py%20s09-out.txt%2060
+
+Another endpoint `/runthis` demonstrates how to call a Python function
+in a daemon process:
+
+http://127.0.0.1:5000/runthis?output=s09-out2.txt
+
+---
+
+# A task queue for background processes
+
+While our approach to spawn daemon processes has the advantage that it
+requires zero infrastructure, there's a few notable drawbacks:
+
+- There's no way to receive feedback from the spawned process.  Did it
+finish successfully?  How long did it run?  We'd have to code this
+functionality by hand.
+
+- We cannot distribute the work across servers.  The background
+processes will always run on the same server that runs our web app.
+
+**To mitigate these problems, we can use a *task queue*.**  Two popular
+task queue implementations for Python are
+[Celery](http://www.celeryproject.org/) and
+[RQ](https://python-rq.org).  We'll use RQ, which has less
+functionality while being a little easier to use.
+
+RQ uses the popular [Redis](https://redis.io/) persistent key-value
+database as its backend.  To install Redis on *Debian* and *Ubuntu*,
+run `apt install redis`.
+
+Sadly, neither RQ nor Celery work on Windows due to their use of the
+`fork()` system call.  Redis itself has limited Windows support.
+
+---
+
+# A task queue for background processes (2)
+
+**Basic usage of an RQ task queue** is demonstrated in the
+[`s10_flask_rq.py`](s10_flask_rq.py) script, a Flask app that has two
+endpoints.  `/run` allows us to enqueue calls to function
+`s09_worker.work` and then displays the job id of the new job.
+`/status` allows us to query the status of an existing job.
+
+To **instantiante a *named* task queue** and connect it to Redis, we
+use:
+
+```python
+redis_connection = Redis()
+task_queue = Queue('my-queue', connection=redis_connection)
+```
+
+To **add jobs to this queue** when processing a request, we do:
+
+```python
+from s09_work import work
+
+@app.route('/run')
+def run():
+    output_fn = request.args['output']
+    seconds = int(request.args.get('seconds', '10'))
+*   job = task_queue.enqueue(work, output_fn, seconds)
+    return "Enqueued job with id {}".format(job.id)
+```
+
+---
+
+# A task queue for background processes (3)
+
+Start the `s10_flask_rq.py` web app:
+
+```bash
+python s10_flask_rq.py
+```
+
+Add a job to the task queue by accessing this address:
+
+http://127.0.0.1:5000/run?output=s09-out2.txt&seconds=60
+
+Now copy the job id that it returns and use it to check the status of
+the job:
+
+http://127.0.0.1:5000/status/4xxxxxxx-4d39-43e1-81bb-854c2de92554
+
+Note that the job is now waiting in the `queued` state.  We still need
+to **run an RQ worker to actually process jobs in the queue**.  Open
+another terminal, make sure that you have your environment active, and
+run:
+
+```bash
+rq worker my-queue
+```
+
+Your job will immediately start to be processed, the status will now
+be `started` until it's `finished`.
+
+---
+
+# A task queue for background processes (4)
+
+Another subcommand of `rq` is `rq info`.  It prints out two things:
+
+- the list of known queues and the number of jobs pending per queue
+- the list of RQ worker processes and their status
+
+```plaintext
+my-queue     |██ 2
+1 queues, 2 jobs total
+
+e98569f2b38c4b81b28bb9a27403072b (None None): busy 
+1 workers, 1 queues
+
+Updated: 2019-06-20 16:57:36.644047
+```
+
+RQ workers are single-thread processes working on one job at a time.
+To process more than one job at the same time, we'd simply start up
+more workers processes, also on different machines on a cluster.
+
+---
+
+# Task queue deployment with Docker and Supervisor
+
+We've seen that using a proper task queue has a few advantages over
+spawning processes directly from Flask.  But **what about the work to
+install and maintain** a Redis server, and keeping those RQ workers
+running?
+
+Thankfully, we can use two tools to make our lives easier in this
+regard:
+
+- [Docker](https://www.docker.com/) makes reproducable installations
+and deployments very easy.  Installing Redis becomes trivial (and it
+also works on Windows!).  Further, we can package and redistribute our
+own app very easily, that is the script that does the actual work and
+the web app that queues jobs.
+
+- [Supervisor](http://supervisord.org/) allows us to manage processes
+within our Docker container.  We use it to start up the web app as
+well as a configurable number of workers.
+
+Subfolder [`s11-docker`](s11-docker) has all the files necessary to
+build a Docker image for our app and to run all necessary services.
+
+---
+
+# Task queue deployment: Install Docker
+
+Before we look at the `s11-docker` files and configurations in detail,
+let's first start it all up to see it work.
+
+If you don't have Docker installed yet, follow the instructions on the
+Docker website [for *Debian* or
+*Ubuntu*](https://docs.docker.com/install/linux/docker-ce/ubuntu/#install-docker-ce)
+or [for
+*Windows*](https://docs.docker.com/docker-for-windows/install/).
+
+We'll also use a tool called
+[`docker-compose`](https://docs.docker.com/compose/), which you can
+simply install by using pip (do this while your environment is
+active):
+
+```bash
+pip install docker-compose
+```
+
+--
+
+Once you're done with installing Docker and `docker-compose`, we
+change into the `s11-docker` directory, and **run this command to
+build our app's image and then start all necessary containers**:
+
+```bash
+docker-compose up --build
+```
+
+(Depending on how you installed Docker, you may need to run this
+command as a superuser or `root`.  In this case, make sure you keep
+using the right virtual environment, since that's where we installed
+`docker-compose`.)
+
+---
+
+# Task queue deployment: Run it
+
+If `docker-compose up --build` was successful, you should be able to
+visit this address to queue a job:
+
+http://localhost:8000/run?output=/data/out.txt&seconds=60
+
+We're writing the output to the `/data/out.txt` file in our app's
+Docker container.  The container's `/data` folder is mapped to the
+[`s11-docker/data/app`](s11-docker/data/app) folder, and you should be
+able to see the worker's output go there.
+
+In the terminal, run the following command to run the `rq info` script
+inside the app container.  This should give you a list with four RQ
+workers that are running:
+
+```bash
+docker exec s11-docker_app_1 /usr/bin/env rq info --url redis://redis:6379/
+```
+
+Our setup includes a web dashboard for RQ, which allows us to look at
+workers and jobs in a more friendly way.  The dashboard is available
+at this address:
+
+http://localhost:9181/my-queue
+
+---
+
+# Task queue deployment: Dockerfile
+
+The `Dockerfile` at [`s11-docker/Dockerfile`](s11-docker/Dockerfile)
+defines a blueprint for building a Docker image for our app.
+
+Here's what's happening in this `Dockerfile`:
+
+- '`FROM python:3`' uses the `python:3` image as our base
+- '`COPY . /app`' copies our app's source code into the image's `/app`
+directory
+- '`COPY supervisord.conf /etc/supervisor/conf.d/app.conf`' copies our
+Supervisor configuration at
+[`supervisord.conf`](s11-docker/supervisord.conf) into a certain
+directory in the image
+- '`WORKDIR /app`' defines the working directory to be `/app`
+- '`RUN pip install -U pip && pip install -r requirements.txt`'
+installs our app's Python dependencies
+- '`CMD ["/usr/bin/supervisord", "-n", "-c",
+"/etc/supervisor/supervisord.conf"]`' says that when the container is
+started, we want Supervisor to be run as defined
+
+---
+
+# Task queue deployment: Supervisor
+
+When dealing with long-running processes on a server, such as web apps
+or RQ workers, Supervisor can be really useful.  It allows us to
+define a list of programs that we want it to start up (and possibly
+restart when they crash) in a [configuration
+file](http://supervisord.org/configuration.html).  We use it to start
+up three programs when our app's Docker container starts up, and
+they're defined as such:
+
+```conf
+[program:webapp]
+command=gunicorn webapp:app -b 0.0.0.0:8000
+directory=/app
+```
+
+```conf
+[program:worker]
+command=rq worker my-queue --url redis://%(ENV_REDIS_HOST)s:%(ENV_REDIS_PORT)s/ --name %(ENV_HOSTNAME)s_%(process_num)s
+process_name=rq_worker_%(process_num)s
+directory=/app
+numprocs=%(ENV_NUM_WORKERS)s
+autorestart=true
+```
+
+```conf
+[program:rqdashboard]
+command=rq-dashboard --redis-url redis://%(ENV_REDIS_HOST)s:%(ENV_REDIS_PORT)s/
+directory=/app
+```
+
+---
+
+# Task queue deployment: Supervisor (2)
+
+In our running container, we can execute the `supervisorctl` script to
+get status information on the processes that Supervisor manages:
+
+```bash
+docker exec s11-docker_app_1 \
+    /usr/bin/supervisorctl -c /etc/supervisor/supervisord.conf status
+```
+
+---
+
+# Task queue deployment: docker-compose
+
+Initially we used `docker-compose` to start up two Docker containers.
+One container is our app's, which we've already looked at.  The other
+container runs Redis.
+
+Let's take a look at
+[`s11-docker/docker-compose.yml`](s11-docker/docker-compose.yml) to
+understand the details.
+
+---
+
+# Task queue deployment: persistent data
+
+In [`s11-docker/docker-compose.yml`](s11-docker/docker-compose.yml),
+we're seeing the use of **`volumes` to map directories inside the two
+Docker containers to directories on our Docker host system** (e.g. our
+laptop running `docker-compose`).  This is necessary for data to
+outlive the lifespan of the individual containers.  That is, whenever
+we delete, rebuild, or update our often short-lived Docker containers,
+we'll still be able to retain our worker's output and the Redis
+database contents with the job queue in a convenient location on the
+Docker host computer.
+
+### ✍️ Exercise
+
+Populate the job queue with a large number of jobs.  Run `docker ps`
+to list all running Docker containers.  Shut down `docker-compose` and
+delete your containers using `docker rm`.  Now run `docker-compose`
+again.  Did our job queue survive the exercise?  And what about jobs
+that were already running?
+
+---
+
+# Task queue deployment: more workers
+
+To scale up the number of workers processing jobs, possibly on a
+different machine, we create a separate `docker-compose` configuration
+file that starts up workers, and we point those workers to use the job
+queue from the existing Redis instance.
+
+### ✍️ Exercise
+
+Find out how to use `docker-compose` to start up the service defined
+in the
+[`s11-docker/docker-compose-workers.yml`](s11-docker/docker-compose-workers.yml)
+configuration file.  Once the new `workers` container is up, visit the
+RQ dashboard and confirm that you now have 12 worker processes.
+
+---
+
+# End
+
+
+    </textarea>
+    <script src="_resources/remark.js" type="text/javascript">
+    </script>
+    <script type="text/javascript">
+      remark.macros.scale = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+      };
+      var slideshow = remark.create({
+          highlightLines: true
+      });
+    </script>
+  </body>
+</html>

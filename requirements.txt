@@ -1,0 +1,6 @@
+Flask
+#gunicorn
+numpy
+Pillow
+requests
+rq
